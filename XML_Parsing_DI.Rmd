@@ -1,0 +1,816 @@
+---
+title: 'XML Parsing and Database Integration'
+author: "Shashank Bettada"
+date: "20 April 2023"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+Loading the XML library that is required for this assignment.
+```{r, include = FALSE, warning = FALSE}
+
+library(XML)
+library(RSQLite)
+library(stringr)
+
+```
+
+Reading the external XML file into R.
+```{r}
+
+path <- getwd()
+
+xpath <- "pubmed22n0001-tf.xml"
+
+xmlFile = paste(path, xpath, sep = "/")
+
+xmlDoc <- xmlParse(file = xmlFile, validate = T)
+
+```
+
+```{r}
+
+fpath = "./"
+
+dbfile = "practicum2DB.sqlite"
+
+dbcon <- dbConnect(RSQLite::SQLite(), paste0(fpath, dbfile))
+
+```
+
+```{r}
+
+dbExecute(dbcon, "DROP TABLE IF EXISTS journals;")
+
+```
+
+```{r}
+
+dbExecute(dbcon, "CREATE TABLE journals (
+                  id INTEGER,
+                  issn TEXT,
+                  title TEXT,
+                  primary key (id)
+                  );")
+
+```
+
+```{r}
+
+dbExecute(dbcon, "DROP TABLE IF EXISTS author_article;")
+
+```
+
+```{r}
+
+dbExecute(dbcon, "CREATE TABLE author_article (
+                  pmid INTEGER,
+                  aid INTEGER,
+                  primary key (pmid, aid),
+                  foreign key (pmid) references articles(pmid),
+                  foreign key (aid) references articles(aid)
+                  );")
+
+```
+
+
+
+```{r}
+
+dbExecute(dbcon, "DROP TABLE IF EXISTS articles;")
+
+```
+
+```{r}
+
+dbExecute(dbcon, "CREATE TABLE articles (
+                  pmid INTEGER,
+                  journal_id INTEGER,
+                  title TEXT,
+                  pub_date TEXT,
+                  primary key (pmid),
+                  foreign key (journal_id) references journals(id)
+                  );")
+
+```
+
+
+```{r}
+
+dbExecute(dbcon, "DROP TABLE IF EXISTS authors;")
+
+```
+
+
+```{r}
+
+dbExecute(dbcon, "CREATE TABLE authors (
+                  aid INTEGER,
+                  name TEXT,
+                  primary key (aid)
+                  );")
+
+```
+
+
+```{r}
+
+r <- xmlRoot(xmlDoc)
+
+```
+
+
+```{r}
+
+numArticles <- xmlSize(r)
+numArticles
+
+```
+
+Creating a data frame for articles.
+```{r}
+
+article_df <- data.frame(pmid = integer(),
+                         journal_id = integer(),
+                         title = character(),
+                         pubDate = character(),
+                         stringsAsFactors = F)
+
+
+```
+
+```{r}
+
+journal_df <- data.frame(jid = integer(),
+                         jissn = character(),
+                         title = character(),
+                         stringsAsFactors = F)
+
+
+```
+
+
+```{r}
+
+author_df <- data.frame(aid = integer(),
+                        full_name = character(),
+                        stringsAsFactors = F)
+
+
+```
+
+```{r}
+
+author_article_df <- data.frame(pmid = integer(),
+                                aid = integer(),
+                                stringsAsFactors = F)
+
+
+```
+
+
+
+```{r}
+
+months_dict <- c(
+  "Jan" = "01", 
+  "Feb" = "02", 
+  "Mar" = "03",
+  "Apr" = "04", 
+  "May" = "05", 
+  "Jun" = "06",
+  "Jul" = "07", 
+  "Aug" = "08", 
+  "Sep" = "09",
+  "Oct" = "10", 
+  "Nov" = "11", 
+  "Dec" = "12"
+)
+
+seasons_dict <- c(
+  "Spring" = "03", 
+  "Summer" = "05", 
+  "Fall" = "09",
+  "Winter" = "12"
+)
+
+```
+
+```{r}
+
+# Helper function to extract date
+extractDate <- function(journalNode) {
+  
+  # Trial code begins
+  
+  year <- NULL
+  month <- NULL
+  season <- NULL
+  day <- NULL
+  medline <- NULL
+  
+  medline <- xpathSApply(journalNode, "./Journal/JournalIssue/PubDate/MedlineDate", xmlValue)
+
+  if (length(medline) == 0) {
+    
+    year <- xpathSApply(journalNode, "./Journal/JournalIssue/PubDate/Year", xmlValue)
+  
+    month <- xpathSApply(journalNode, "./Journal/JournalIssue/PubDate/Month", xmlValue)
+    if (length(month) == 0) {
+      month <- NULL
+      season <- xpathSApply(journalNode, "./Journal/JournalIssue/PubDate/Season", xmlValue)
+      if (length(season) == 0) {
+        season <- NULL
+      }
+      
+    }
+    
+    day <- xpathSApply(journalNode, "./Journal/JournalIssue/PubDate/Day", xmlValue)
+    if (length(day) == 0) {
+      day <- NULL
+    } 
+  
+    medline <- NULL
+  } 
+  
+  
+  # Trial code ends
+  
+  year_ <- "0000"
+  month_ <- "Xxx"
+  day_ <- "00"
+  
+  
+  if (!is.null(medline)) {
+    
+    # Check year
+    year_ <- substr(medline, 1, 4)
+    
+    # Check month
+    mon <- substr(medline, 10, 12)
+    month_ <- months_dict[mon]
+    
+    # Check day
+    day_ <- "01"
+
+  } else {
+    
+    # Check year
+    year_ <- year
+    
+    # Check month
+    if (!is.null(month)) {
+      month_ <- months_dict[month]
+    } else if (!is.null(season)) {
+      month_ <- seasons_dict[season]
+    } else {
+      month_ <- "01"
+    }
+    
+    # Check day
+    if (!is.null(day)) {
+        day_ <- day
+      } else {
+        day_ <- "01"
+      }
+
+  }
+  
+  # return (paste0(month_, "-", day_, "-", year_))
+  return (paste0(year_, "-", month_, "-", day_))
+
+}
+
+```
+
+
+
+```{r}
+
+fetchNameAndKey <- function(authorNode) {
+  
+  lname <- xpathSApply(authorNode, "./LastName", xmlValue)
+  
+  if (length(lname) == 0) {
+    collective <- xpathSApply(authorNode, "./CollectiveName", xmlValue)
+    key <- str_replace_all(collective, " ", "-")
+    nameKey <- key
+    
+    name <- collective
+    
+  } else {
+    
+    fname <- xpathSApply(authorNode, "./ForeName", xmlValue)
+    # initial <- xpathSApply(authorNode, "./Initials", xmlValue)
+    
+    if (length(fname) != 0) {
+      nameKey <- paste0(lname, fname)
+      name <- paste0(lname, ", ", fname)
+    } else {
+      nameKey <- lname
+      name <- lname
+    } 
+
+  }
+  
+  df <- c(nameKey, name)
+  
+  return(df)
+}
+
+```
+
+```{r}
+
+journal_count <- 1
+journal_unknown_count <- 1
+author_count <- 1
+author_article_count <- 1
+
+```
+
+
+```{r}
+
+# Create a new df in order to keep track of repeated journals
+j_issn <- c("")
+
+j_id <- c(1)
+
+j_title <- c("")
+
+journalCheck_df <- data.frame(j_issn, j_id, j_title)
+
+journalCheck_df
+
+```
+
+
+```{r}
+
+# Create a new df in order to keep track of repeated journals
+a_key <- c("")
+
+a_id <- c(1)
+
+authorCheck_df <- data.frame(a_key, a_id)
+
+authorCheck_df
+
+```
+
+
+```{r}
+
+# Parse article
+
+parseArticle <- function(articleNode) {
+  
+
+  # Article elements
+  attr <- xmlAttrs(articleNode)
+  pmid <- as.integer(attr[[1]])
+  
+  journal_title <- xpathSApply(articleNode[[1]], "./Journal/Title", xmlValue)
+  
+  journal_issn <- xpathSApply(articleNode[[1]], "./Journal/ISSN", xmlValue)
+  if (length(journal_issn) == 0) {
+    
+    if (any(journalCheck_df$j_title == journal_title) == FALSE) { 
+      journal_issn <- paste0("unknown-", journal_unknown_count)
+      journal_unknown_count <<- journal_unknown_count + 1
+    } else {
+      
+      journal_issn <- journalCheck_df$j_issn[which(journalCheck_df$j_title == journal_title)]
+    }
+  }
+
+  # Check if the journal is already present in the df
+  if (any(journalCheck_df$j_issn == journal_issn) == FALSE) {
+    
+    #Add journal (Insert new journal to journal_df)
+    journalCheck_df[journal_count, ] <<- c(journal_issn, journal_count, journal_title)
+    
+    journal_df[journal_count, ] <<- c(journal_count, journal_issn, journal_title)
+
+    journal_count <<- journal_count + 1
+    
+  } 
+  
+  authorList <- xpathSApply(articleNode[[1]], "./AuthorList/Author")
+  
+  for (author in authorList){
+    
+    auth_res <- fetchNameAndKey(author) 
+    
+      # Check if author is already present in the df
+    if (any(authorCheck_df$a_key == auth_res[1]) == FALSE) {
+      
+      #Add author (Insert new journal to journal_df)
+      authorCheck_df[author_count, ] <<- c(auth_res[1], author_count)
+      
+      author_df[author_count, ] <<- c(author_count, auth_res[2])
+      
+      author_count <<- author_count + 1
+      
+    } 
+    
+    ## Add to author_article_df
+    author_id <- which(authorCheck_df$a_key == auth_res[1])
+    author_article_res <- c(pmid, author_id)
+    author_article_df[author_article_count, ] <<- as.character(author_article_res)
+    author_article_count <<- author_article_count + 1
+    
+  }
+  
+  journal_id <- which(journalCheck_df$j_issn == journal_issn)
+
+  title <- xpathSApply(articleNode, "./PubDetails/ArticleTitle", xmlValue)
+  
+  # Extract article date 
+  article_date <- extractDate(articleNode[[1]])
+  
+  df <- c(pmid, journal_id, title, article_date)
+  
+  return(df)
+
+}
+
+
+```
+
+
+```{r}
+
+# Insert data to articles df
+
+# Took 5 minutes to parse.
+
+for (i in 1:numArticles) {
+  
+  x <- xmlRoot(xmlDoc)
+  
+  article_df[i, ] <- parseArticle(x[[i]])
+  
+}
+
+
+```
+
+```{r}
+
+head(article_df)
+
+```
+
+```{r}
+
+head(journal_df)
+
+```
+
+```{r}
+
+head(author_df)
+
+
+```
+
+```{r}
+
+head(author_article_df)
+
+```
+
+
+```{r}
+
+save(article_df, file = "article.Rdata")
+save(journal_df, file = "journal.Rdata")
+save(author_df, file = "author.Rdata")
+save(author_article_df, file = "author_article.Rdata")
+save(journalCheck_df, file = "journalCheck.Rdata")
+save(authorCheck_df, file = "authorCheck.Rdata")
+
+```
+
+```{r, message = FALSE, warning = FALSE}
+
+dbWriteTable(dbcon, "articles", article_df, row.names = F, overwrite = T)
+dbWriteTable(dbcon, "journals", journal_df, row.names = F, overwrite = T)
+dbWriteTable(dbcon, "authors", author_df, row.names = F, overwrite = T)
+dbWriteTable(dbcon, "author_article", author_article_df, row.names = F, overwrite = T)
+
+```
+
+
+```{sql connection = dbcon}
+
+SELECT Count(*) FROM articles;
+
+```
+
+```{sql connection = dbcon}
+
+SELECT * FROM articles
+LIMIT 5;
+
+```
+
+
+```{sql connection = dbcon}
+
+SELECT articles.pubDate FROM journals
+JOIN articles ON (articles.journal_id = journals.jid)
+WHERE journals.jissn = "0006-2944";
+
+```
+
+```{sql connection = dbcon}
+
+SELECT * FROM journals
+LIMIT 20;
+
+```
+
+
+
+```{sql connection = dbcon}
+
+SELECT * FROM authors
+LIMIT 5;
+
+```
+
+
+```{sql connection = dbcon}
+
+SELECT * FROM author_article
+LIMIT 5;
+
+```
+
+```{sql connection = dbcon}
+
+SELECT j.jid, j.jissn, j.title, strftime('%Y', date(a.pubDate)) as Year, strftime('%m', date(a.pubDate)) as Month, count(distinct(a.pmid)) as Articles, count(distinct(au.aid)) as Authors
+  FROM journals j
+  LEFT JOIN articles a
+  ON j.jid = a.journal_id
+  LEFT JOIN author_article aau
+  ON a.pmid = aau.pmid
+  LEFT JOIN authors au
+  ON aau.aid = au.aid
+  GROUP BY j.jid, Year, Month
+  ORDER BY j.jid
+  LIMIT 10;
+
+```
+
+## Part 2
+
+```{r}
+
+library(tibble)
+
+```
+
+```{r}
+
+facts_query <- "SELECT j.jid, j.jissn, j.title, strftime('%Y', date(a.pubDate)) as Year, 
+                strftime('%m', date(a.pubDate)) as Month, count(distinct(a.pmid)) as Articles, 
+                count(distinct(au.aid)) as Authors
+                  FROM journals j
+                  LEFT JOIN articles a
+                  ON j.jid = a.journal_id
+                  LEFT JOIN author_article aau
+                  ON a.pmid = aau.pmid
+                  LEFT JOIN authors au
+                  ON aau.aid = au.aid
+                  GROUP BY j.jid, Year, Month
+                  ORDER BY j.jid;"
+
+```
+
+```{r}
+
+facts_res_df <- dbGetQuery(dbcon, facts_query)
+
+```
+
+```{r}
+
+head(facts_res_df) 
+
+```
+
+```{r}
+
+quarters_dict <- c(
+  "01" = "01", 
+  "02" = "01", 
+  "03" = "01",
+  "04" = "02", 
+  "05" = "02", 
+  "06" = "02",
+  "07" = "03", 
+  "08" = "03", 
+  "09" = "03",
+  "10" = "04", 
+  "11" = "04", 
+  "12" = "04"
+)
+
+```
+
+```{r}
+
+facts_res_df <- add_column(facts_res_df, quarters_dict[facts_res_df$Month], .after = 5)
+head(facts_res_df)
+
+```
+
+```{r}
+
+
+colnames(facts_res_df)[6] = "Quarter"
+head(facts_res_df)
+
+```
+
+
+```{r}
+
+n_facts <- nrow(facts_res_df)
+
+```
+
+
+```{r}
+
+factId <- matrix("1", ncol = 1, nrow = n_facts)
+factId_df <- data.frame(factId)
+nrow(factId_df)
+
+```
+
+```{r}
+
+facts_df <- cbind(factId_df, facts_res_df)
+head(facts_df)
+
+```
+
+
+```{r}
+
+facts_df[,1] <- seq(1, n_facts)
+
+
+```
+
+```{r}
+
+facts_df$jid <- as.integer(facts_df$jid)
+facts_df$Year <- as.integer(facts_df$Year)
+facts_df$Month <- as.integer(facts_df$Month)
+facts_df$Quarter <- as.integer(facts_df$Quarter)
+
+```
+
+```{r}
+
+head(facts_df)
+
+```
+
+
+```{r}
+
+library(RMySQL) 
+
+```
+
+Configuring the db connection specifications:
+```{r db_configuration, message = FALSE, warning = FALSE}
+
+db_user <- 'root'
+db_password <- 'Shash2909@1pm!'
+db_name <- 'factsDB'
+db_host <- 'localhost'
+db_port <- 3306
+
+```
+
+Establishing connection with the MySQL database (localhost):
+```{r db_connection, message = FALSE, warning = FALSE}
+
+dbmySql <- dbConnect(MySQL(), user = db_user, password = db_password, 
+                  dbname = db_name, host = db_host, port = db_port)
+
+```
+
+```{sql drop_airports, connection = dbmySql}
+
+DROP TABLE IF EXISTS journal_facts;
+
+```
+
+```{sql create_airports, connection = dbmySql}
+
+CREATE TABLE journal_facts (
+  factId INT,
+  journalId INT,
+  issn VARCHAR(10),
+  title VARCHAR(150),
+  year INT,
+  month INT,
+  quarter INT,
+  articles INT,
+  authors INT,
+  PRIMARY KEY (factId)
+);
+
+```
+
+Loading the data into the incidents table using dbWriteTable() function:
+
+```{r load_incident, message = FALSE, warning = FALSE}
+
+dbWriteTable(dbmySql, 'journal_facts', facts_df, row.names = F, overwrite = T)
+
+```
+
+
+```{sql create_airports, connection = dbmySql}
+
+ALTER TABLE journal_facts MODIFY factId INTEGER;
+
+```
+
+```{sql create_airports, connection = dbmySql}
+
+ALTER TABLE journal_facts MODIFY jid INTEGER;
+
+```
+
+```{sql create_airports, connection = dbmySql}
+
+ALTER TABLE journal_facts MODIFY Year INTEGER;
+
+```
+
+```{sql create_airports, connection = dbmySql}
+
+ALTER TABLE journal_facts MODIFY Month INTEGER;
+
+```
+
+```{sql create_airports, connection = dbmySql}
+
+ALTER TABLE journal_facts MODIFY Quarter INTEGER;
+
+```
+
+```{sql create_airports, connection = dbmySql}
+
+ALTER TABLE journal_facts MODIFY Articles INTEGER;
+
+```
+
+```{sql create_airports, connection = dbmySql}
+
+ALTER TABLE journal_facts MODIFY Authors INTEGER;
+
+```
+
+```{sql create_airports, connection = dbmySql}
+
+SELECT * FROM journal_facts
+WHERE Year = 1977
+LIMIT 5;
+
+```
+
+Disconnect SQLite database:
+```{r disconnect_db, message = FALSE, warning = FALSE}
+
+dbDisconnect(dbcon)
+
+```
+
+Disconnect MySQL database:
+```{r disconnect_db, message = FALSE, warning = FALSE}
+
+dbDisconnect(dbmySql)
+
+```
+
+
+
+
+
+
+
+
+
