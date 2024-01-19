@@ -695,7 +695,7 @@ Configuring the db connection specifications:
 ```{r db_configuration, message = FALSE, warning = FALSE}
 
 db_user <- 'root'
-db_password <- 'Shash2909@1pm!'
+db_password <- 'ENTER YOUR PASSWORD'
 db_name <- 'factsDB'
 db_host <- 'localhost'
 db_port <- 3306
